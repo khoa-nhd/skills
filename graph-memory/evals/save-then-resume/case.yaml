@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: save-then-resume
+expected_outcome: |
+  .claude/graph-memory.md is updated in place: Now names the `remindly snooze <id> --min 10` command as the
+  next step and notes that snooze() already exists in remindly/models.py; Decisions has a dated entry for
+  JSON over SQLite with the single-user reason; Log has a line for today; the file stays well under 80 lines.
+  A new chat would see the new Now section through `gm.py session-start --plain`.
+context:
+  scaffold_script: place-files.sh

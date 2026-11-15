@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: feature-uses-graph-first
+expected_outcome: |
+  `remindly add` accepts --tag (once or repeated) and the tags reach Reminder.tags. storage.py needs no
+  change because it already saves tags, which the agent should find through the graph and a targeted read
+  rather than by reading every module. The agent located code with graphify (explain, affected, query or
+  path) before reading source, read only what it edited or depended on, and refreshed the graph after editing.
+context:
+  scaffold_script: place-files.sh

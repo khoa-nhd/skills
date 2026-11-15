@@ -1,0 +1,19 @@
+# skills
+
+My personal collection of skills for [Claude Code](https://claude.com/claude-code). Each folder is one skill: a `SKILL.md` with instructions for Claude, plus any scripts, references and tests it needs.
+
+## Skills
+
+| Skill | What it does |
+|---|---|
+| [graph-memory](graph-memory/) | Per-folder project memory built on graphify: a code knowledge graph plus a short notes file. New chats continue the work without re-reading the codebase, which saves tokens. Commands: `init`, `update`, `status`, `ask`, `impact`, `save`, `resume`, `remove`. |
+
+## Using a skill
+
+Claude Code loads skills from `~/.claude/skills/<name>/`. To use one from this repo, link or copy its folder there. Some skills ship their own installer; graph-memory does:
+
+```bash
+python graph-memory/scripts/install.py
+```
+
+Each skill's own README has the details.

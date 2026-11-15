@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: init-sets-up-memory
+expected_outcome: |
+  Graph memory is set up in the project folder: graphify-out/graph.json and GRAPH_REPORT.md exist,
+  CLAUDE.md holds the graph-memory section between its markers, .graphifyrc sets query_budget, and
+  .claude/graph-memory.md has a short Overview naming Remindly, its Python stack and the run and test
+  commands. The overview came from cheap sources (README, GRAPH_REPORT.md), not from reading the code.
+context:
+  scaffold_script: place-files.sh
