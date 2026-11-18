@@ -77,6 +77,10 @@ Climb only as far as the task needs. Each rung costs more than the one before.
 3. **Targeted read.** Start a few lines before the `file:Lnn` the graph gave you and read about 60 lines. If the function or class you will change continues past that, keep reading to its end; the next symbol's line from `explain` tells you where to stop. Never edit a region you have only partly read. A file under about 80 lines can be read whole, since a targeted read would save nothing.
 
 4. **Grep** for literal text the graph does not model.
+   - **Check before assuming.** What graphify extracts varies by language and project. When you are not sure the graph covers what you need, check cheaply:
+     - `gm.py nodes <name>` for a symbol;
+     - `gm.py covers <file>...` for files: 0 nodes means the graph knows nothing about their contents.
+   - **Say why in one line** whenever you go to grep instead of the graph, for example: `Lookup: grep, because covers shows 0 nodes for the SQL migration and vi.json`. It tells the user the skip was deliberate, not forgotten.
    - For code, scope it to the paths the graph pointed to.
    - For resources, config, build scripts, or a name you are renaming or deleting, scope it to the relevant folders (`res/`, the manifest, `*.gradle*`, config folders), or to the whole repo minus `graphify-out/` and build output.
 
@@ -90,7 +94,7 @@ Climb only as far as the task needs. Each rung costs more than the one before.
 - **The code you will change.** Read its current text: the whole function or class region. Never edit from graph output alone.
 - **Who depends on it.** Run `affected --depth 1` when you change its contract, and read each call site you will update.
 - **What it calls.** Read the signatures you will call with new arguments, and anything whose behaviour you rely on. `explain` gives the location.
-- **What the graph cannot see.** Grep these when the task touches them:
+- **What the graph usually cannot see.** Coverage varies, so `gm.py covers <file>` settles it when it matters. Grep these when the task touches them:
   - config and resources: XML layouts, AndroidManifest, string and navigation resources, JSON or YAML;
   - build scripts, SQL, string-keyed lookups, reflection and DI wiring, generated code.
 - **Tests** for the area. Look for test nodes in the `affected --depth 1` output, which is not capped. `explain` shows only 20 neighbours, so a test missing from it proves nothing. If `affected` lists no tests, check by convention before concluding there are none: `src/test/`, `src/androidTest/`, `**/*Test.*`, `**/*_test.*`, `tests/test_<module>.py`. Kotlin and Java tests in the same package need no import, so they show no edge.
@@ -136,7 +140,7 @@ With no argument, run `status` and list the commands.
 | `init` | Set up graph memory in the current folder. Follow `references/init.md`. |
 | `update` | Run `gm.py update` (parser refresh, no tokens). Add `--force` when code was deleted or moved and graphify refuses to shrink the graph. `update --docs` means semantic extraction of docs, papers and images: invoke the graphify skill with `. --update`. That costs real tokens, so say so and get a yes first. |
 | `status` | Run `gm.py status` and relay it in a few lines. `--benchmark` adds graphify's estimate of tokens saved per query. |
-| `ask <question>` | Answer from the graph with the ladder. Cite `file:line`, and say what you could not confirm without reading code. |
+| `ask <question>` | Answer from the graph with the ladder. Cite `file:line`, and say what you could not confirm without reading code. If you answer from context or grep instead of the graph, start with the one-line reason (see Grep under The ladder). |
 | `impact <symbol>` | Run `graphify affected` and `graphify explain`. List what a change would touch, grouped by file. Read nothing more unless asked to make the change. |
 | `save [note]` | Update the notes. Follow `references/notes.md`. |
 | `resume` | Run `gm.py session-start --plain`, then wait for the task. |

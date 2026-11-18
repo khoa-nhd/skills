@@ -12,6 +12,7 @@ CLAUDE.md. `init` always works on the current folder.
                             set up graph memory in the current folder
   update [--force]          refresh the graph after code changes (parser only, no LLM)
   nodes WORD [WORD ...]     node labels that match the words: a cheap vocabulary lookup
+  covers FILE [FILE ...]    how many graph nodes each file has (0: grep it instead)
   remove [--dry-run] [--git-hooks] [--guard] [--purge --yes]
                             undo init (keeps the graph and the notes unless --purge)
   stop-hook                 Stop hook: when code changed, refresh the graph in the background
@@ -886,6 +887,38 @@ def cmd_nodes(args) -> int:
     return 0
 
 
+def cmd_covers(args) -> int:
+    """How many graph nodes each file has: 0 means the graph knows nothing about its contents."""
+    root = find_root(Path.cwd())
+    data = load_json(root / OUT / "graph.json") if root else None
+    if not isinstance(data, dict):
+        say("No graph found here or in parent folders.")
+        return 1
+    counts: dict[str, int] = {}
+    for node in data.get("nodes", []):
+        if isinstance(node, dict) and node.get("source_file"):
+            key = str(node["source_file"]).replace("\\", "/")
+            counts[key] = counts.get(key, 0) + 1
+    manifest = load_json(root / OUT / "manifest.json")
+    scanned = {str(key).replace("\\", "/") for key in manifest} if isinstance(manifest, dict) else set()
+    for raw in args.files:
+        path = Path(raw)
+        full = (path if path.is_absolute() else Path.cwd() / path).resolve()
+        try:
+            rel = posix(full.relative_to(root))
+        except ValueError:
+            say(f"{raw}: outside the project at {posix(root)}")
+            continue
+        count = counts.get(rel, 0)
+        if count:
+            say(f"{rel}: {count} nodes; use the graph for it")
+        elif rel in scanned:
+            say(f"{rel}: scanned but 0 nodes; the graph has nothing from its contents, so grep it")
+        else:
+            say(f"{rel}: not in the graph (not scanned, ignored or new); grep it")
+    return 0
+
+
 def cmd_remove(args) -> int:
     root = find_root(Path.cwd()) or Path.cwd().resolve()
     dry = args.dry_run
@@ -1022,6 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
     nodes = sub.add_parser("nodes")
     nodes.add_argument("words", nargs="+")
     nodes.add_argument("--limit", type=int, default=15)
+    sub.add_parser("covers").add_argument("files", nargs="+")
     remove = sub.add_parser("remove")
     for flag in ("--dry-run", "--git-hooks", "--guard", "--purge", "--yes"):
         remove.add_argument(flag, action="store_true")
@@ -1041,7 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             return 0  # hooks and background work must never disturb the chat
     handlers = {"status": cmd_status, "init": cmd_init, "update": cmd_update,
-                "nodes": cmd_nodes, "remove": cmd_remove}
+                "nodes": cmd_nodes, "covers": cmd_covers, "remove": cmd_remove}
     return handlers[args.cmd](args)
 
 

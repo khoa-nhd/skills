@@ -104,8 +104,9 @@ python D:/DangKhoa/project/skills/graph-memory/scripts/install.py --uninstall
    - or the file is missing from the graph.
 
    In those cases Claude greps the name before trusting "no callers".
-4. **Stop reading** once every applicable item is answered. When unsure, it asks: "If this is wrong, will I write incorrect code?"
-5. **Verify** with the narrowest build or test before calling the task done.
+4. **Never skip the graph silently.** When Claude uses grep instead, it says why in one line. If it is unsure whether the graph covers a file, it checks with `gm.py covers <file>` (0 nodes means grep) rather than assuming.
+5. **Stop reading** once every applicable item is answered. When unsure, it asks: "If this is wrong, will I write incorrect code?"
+6. **Verify** with the narrowest build or test before calling the task done.
 
 ## Layout
 
@@ -120,7 +121,7 @@ graph-memory/
 │   ├── claude-md-section.md     the section written into CLAUDE.md
 │   └── notes-template.md        template for the notes file
 ├── scripts/
-│   ├── gm.py                    per-project helper: init, update, status, nodes, session-start,
+│   ├── gm.py                    per-project helper: init, update, status, nodes, covers, session-start,
 │   │                            stop-hook, bg-update, remove
 │   └── install.py               machine-wide install and uninstall
 └── evals/                       test cases (init, feature work, use command, save then resume)

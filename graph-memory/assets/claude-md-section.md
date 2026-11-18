@@ -10,7 +10,7 @@ Graph memory is on for this folder: a graphify code graph in `graphify-out/` and
   - `graphify path "<A>" "<B>"`;
   - `graphify query "<identifiers>" --depth 1` for discovery.
 
-  Use names as written in code; for a method, qualify it as `Class.method`. On no match, run `gm.py nodes <word>`; after two misses, grep. If the session note lists changed files, run `gm.py update` once before the first lookup. Call the graphify CLI directly; the graphify skill is only for semantic doc builds.
+  Use names as written in code; for a method, qualify it as `Class.method`. On no match, run `gm.py nodes <word>`; after two misses, grep. When unsure whether the graph covers some files, check with `gm.py covers <file>...` (0 nodes: grep them) rather than assuming. Whenever you grep instead of using the graph, say why in one line (`Lookup: grep, because ...`). If the session note lists changed files, run `gm.py update` once before the first lookup. Call the graphify CLI directly; the graphify skill is only for semantic doc builds.
 - **Read only what the task needs**, with offset/limit: the whole function or class you will change, each call site you will update, any callee whose behaviour you rely on, and the area's tests. The graph cannot see config and resources (XML layouts, manifests, strings, navigation), build scripts, SQL, string-keyed lookups or DI/reflection wiring, so grep those when the task touches them. Kotlin/Java tests in the same package show no edge; look in `src/test/` and similar folders.
 - **Before the first edit, write one or two lines**: `Context: have ... Reading ... because ... Skipping ...`. Before reporting, check that each Reading item was read.
   - The graph alone answers where-is and what-calls-what.
