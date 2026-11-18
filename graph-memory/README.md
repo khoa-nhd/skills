@@ -13,21 +13,22 @@ Each project folder gets two stores:
 
 These pieces tie the stores together:
 
-- **`/graph-memory use <task>`.** The main command. Claude does the task graph-first:
-  1. locates code with the graph;
-  2. writes a one-line context check of what it has, what it still reads and why;
-  3. edits, updating every call site when a contract changes;
-  4. verifies with a build or tests;
-  5. refreshes the graph and the notes.
-- **A global SessionStart hook.** Every new chat gets a short note:
+- **A `## graph-memory` section in `CLAUDE.md`.** `init` writes it. It is the whole coding procedure, so plain chats follow it as well:
+  1. Locate code with the graph in one batched call.
+  2. Write a one-line context check of what Claude has, what it still reads and why.
+  3. Read exactly those ranges.
+  4. Edit, updating every dependent and implementer when a contract changes.
+  5. Verify with compile and tests.
+  6. Report.
+- **`/graph-memory use <task>`.** Runs a task by that procedure and keeps it in force for the rest of the chat. The skill body it loads is only about 2 KB, because the procedure itself lives in CLAUDE.md.
+- **A global SessionStart hook.** Every new chat gets a short note, capped at about 2,000 characters:
   - how old the graph is;
   - which files changed since it was built;
   - the hub symbols;
-  - the Now, Rules and Overview sections of the notes.
+  - the Overview, Rules and Now sections of the notes.
 
   It also brings the project's CLAUDE.md section up to the installed skill version.
-- **A global Stop hook.** After each reply, if code changed since the last build, it refreshes the graph in the background, at no token cost. This works in folders that are not git repos too.
-- **A `## graph-memory` section in `CLAUDE.md`.** `init` writes it. It holds the everyday rules, so Claude follows them even without typing `use`.
+- **A global Stop hook.** After each reply, if code changed since the last build, it refreshes the graph in the background, at no token cost. This works in folders that are not git repos too, so Claude never spends a turn refreshing it.
 
 Both hooks do nothing in folders without graph memory, so they cost nothing there.
 
@@ -106,16 +107,26 @@ python D:/DangKhoa/project/skills/graph-memory/scripts/install.py --uninstall
    In those cases Claude greps the name before trusting "no callers".
 4. **Never skip the graph silently.** When Claude uses grep instead, it says why in one line. If it is unsure whether the graph covers a file, it checks with `gm.py covers <file>` (0 nodes means grep) rather than assuming.
 5. **Stop reading** once every applicable item is answered. When unsure, it asks: "If this is wrong, will I write incorrect code?"
-6. **Verify** with the narrowest build or test before calling the task done.
+6. **Verify** with the narrowest compile and test before calling the task done.
+
+## Keeping it cheap
+
+Everything that sits in the context rides along on every turn of a chat, so the skill keeps its fixed text small and avoids extra turns:
+- **Small fixed text.** During `use`, the CLAUDE.md section, the skill body and the session note add up to about 8.5 KB, against 23.5 KB in the first version.
+- **Fewer turns.** Lookups and their likely follow-ups go into one Bash call, and reads are batched.
+- **No refresh turn.** The Stop hook refreshes the graph, so Claude does not.
+- **Fewer notes edits.** The notes are edited only for decisions, rules or unfinished work.
+- **Details on demand.** Corner cases live in `references/lookup.md`, which Claude reads only when stuck.
 
 ## Layout
 
 ```
 graph-memory/
-├── SKILL.md                     instructions for Claude (use + lookup rules + commands)
+├── SKILL.md                     short: points `use` at the CLAUDE.md procedure, lists commands
 ├── README.md                    this file
 ├── references/
 │   ├── init.md                  init and remove procedures
+│   ├── lookup.md                lookup corner cases, read only when stuck
 │   └── notes.md                 notes format and save procedure
 ├── assets/
 │   ├── claude-md-section.md     the section written into CLAUDE.md

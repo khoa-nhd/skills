@@ -6,13 +6,13 @@ The file is `.claude/graph-memory.md` in the project root, created by `gm.py ini
 
 | Section | Shown to every new chat? | Content |
 |---|---|---|
-| Now | yes | What is in progress, where it stopped (file or function), the next concrete step, open questions. Replace it on each save rather than appending. At most 6 lines. |
-| Rules | yes | Project conventions and gotchas the code does not make obvious, and any "always" or "never" the user stated. At most 10 lines. |
-| Overview | yes | What the project is, the stack, entry points, how to run and test. About 5 lines. |
+| Overview | yes, first | What the project is, the stack, entry points, and the exact compile and test commands. Under 1000 characters. |
+| Rules | yes | Project conventions and gotchas the code does not make obvious, and any "always" or "never" the user stated. Under 600 characters. |
+| Now | yes | What is in progress, where it stopped (file or function), the next concrete step, open questions. Replace it on each save rather than appending. Under 500 characters. |
 | Decisions | no, read on demand | `YYYY-MM-DD - decision - why`, newest first. Read it when making a related choice. |
 | Log | no, read on demand | `YYYY-MM-DD - what was done`, newest first. Keep the last 10 lines. |
 
-The session note shows at most 10 lines per hot section and 30 in total. Anything beyond that is cut, which is one more reason to keep the hot sections tight.
+The session note shows these three sections in that order. It caps them at about 1000, 600 and 500 characters, and cuts any line over 330 characters. The cut part only reaches a chat that opens the file, so put the build and test commands first in Overview, and keep every Rule short enough to fit.
 
 ## What belongs here
 
@@ -35,7 +35,7 @@ Write in terse English, which costs fewer tokens than Vietnamese with diacritics
 3. Edit the file in place:
    - replace Now;
    - add to Decisions and Rules, merging duplicates and dropping items that are no longer true;
-   - add one Log line for today, unless today's work is already logged (for example by a `use` task), and drop Log lines beyond the last 10.
+   - add one Log line for today unless one exists, and drop Log lines beyond the last 10.
 4. Keep the file under about 80 lines. If it is over, shorten the Log, merge Rules, and remove detail that no new chat needs.
-5. If code changed this session and the graph was not refreshed, run `gm.py update`.
+5. Do not run `gm.py update`; the Stop hook refreshes the graph.
 6. Tell the user in one or two lines what changed in the notes.

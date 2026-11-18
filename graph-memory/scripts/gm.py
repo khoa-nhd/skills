@@ -46,9 +46,12 @@ RC_BLOCK = "# added by graph-memory: keep graphify query answers small by defaul
 IGNORE_NAME = ".graphifyignore"
 IGNORE_BLOCK = ("# added by graph-memory: Claude reads these directly, so keep them out of the graph\n"
                 ".claude/\nCLAUDE.md\n")
-HOT_SECTIONS = ("now", "rules", "overview")
-HOT_SECTION_MAX = 10
-HOT_TOTAL_MAX = 30
+# The notes sections every new chat sees, most useful for coding first (Overview names the build
+# and test commands). They are re-sent with every turn of the chat, so they are capped by size.
+HOT_SECTIONS = ("overview", "rules", "now")
+HOT_SECTION_CHARS = {"overview": 1000, "rules": 600, "now": 500}
+HOT_TOTAL_CHARS = 2100
+HOT_LINE_CHARS = 330
 NOTES_SOFT_CAP = 80
 DOCS_HEAVY = 15
 STATE_NAME = ".graph-memory-state.json"
@@ -463,16 +466,23 @@ def hot_lines(path: Path) -> list[str]:
         body = sections.get(name) or []
         if not body:
             continue
-        room = min(HOT_SECTION_MAX, HOT_TOTAL_MAX - total)
-        if room <= 0:
-            lines.append(f"(more sections cut; read {NOTES_REL})")
-            break
-        shown = body[:room]
+        shown: list[str] = []
+        used = 0
+        for line in body:
+            if len(line) > HOT_LINE_CHARS:
+                line = line[:HOT_LINE_CHARS - 1].rstrip() + "…"
+            if used + len(line) > HOT_SECTION_CHARS[name] or total + used + len(line) > HOT_TOTAL_CHARS:
+                break
+            shown.append(line)
+            used += len(line)
+        if not shown:
+            lines.append(f"[{name.title()}] in {NOTES_REL}")
+            continue
         lines.append(f"[{name.title()}]")
         lines.extend(shown)
-        if len(body) > len(shown):
-            lines.append(f"  (+{len(body) - len(shown)} more lines in {NOTES_REL})")
-        total += len(shown)
+        if len(body) > len(shown) or any(line.endswith("…") for line in shown):
+            lines.append("  (cut; open the notes file only if the cut part matters for the task)")
+        total += used
     return lines
 
 
@@ -495,7 +505,7 @@ def session_note(root: Path, cwd: Path) -> str:
         if stale:
             shown = ", ".join(stale[:6]) + (f" and {len(stale) - 6} more" if len(stale) > 6 else "")
             lines.append(f"Changed since that build: {shown}. "
-                         "Run `gm.py update` once before the first lookup.")
+                         "Start your first lookup call with `gm.py update;`.")
         if load_state(root).get("needs_force"):
             lines.append("The last graph refresh kept the old graph because the new one would be smaller "
                          "(code deleted or moved?). If that was intended, run `gm.py update --force`.")
@@ -519,7 +529,7 @@ def session_note(root: Path, cwd: Path) -> str:
     if notes.is_file():
         hot = hot_lines(notes)
         if hot:
-            lines.append(f"Project notes ({NOTES_REL}; Decisions and Log stay in the file):")
+            lines.append(f"Project notes ({NOTES_REL}; Decisions and Log omitted, not needed for routine tasks):")
             lines.extend(hot)
         else:
             lines.append(f"Project notes ({NOTES_REL}) are still empty.")
@@ -813,9 +823,9 @@ def cmd_update(args) -> int:
         return 2
     before = report_info(root).get("nodes", "0")
     started = time.time()
-    before = fingerprints(root, stale_files(root))
+    pending_before = fingerprints(root, stale_files(root))
     code, log = run_graphify(exe, ["update", "."] + (["--force"] if args.force else []), root)
-    record_update(root, code, log, forced=args.force, before=before)
+    record_update(root, code, log, forced=args.force, before=pending_before)
     if code != 0:
         say(f"x `graphify update .` failed (exit {code}):")
         say(tail(log, 12))

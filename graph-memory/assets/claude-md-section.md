@@ -1,30 +1,42 @@
 ## graph-memory
 
-Graph memory is on for this folder: a graphify code graph in `graphify-out/` and project notes in `.claude/graph-memory.md`. The session-start note shows their current state; if you did not get one, run `/graph-memory resume`. For coding tasks the user may type `/graph-memory use <task>`. Work the same way either way: spend tokens on the lines that matter, and never trade correctness for it.
+Graph memory is on here: a code graph in `graphify-out/` and notes in `.claude/graph-memory.md`. `gm.py` means `python $HOME/.claude/skills/graph-memory/scripts/gm.py`. Follow these rules for every coding task, whether or not it comes as `/graph-memory use <task>`.
+- Call the graphify CLI directly. Never load the graphify skill; only `/graph-memory update --docs` needs it.
+- If there was no session note at the start, run `gm.py session-start --plain`.
 
-`gm.py` below means `python $HOME/.claude/skills/graph-memory/scripts/gm.py`.
+1. **Locate in one Bash call** from this folder, with commands joined by `;`. If the session note lists changed files, start the call with `gm.py update;`. Write names as they appear in code, and methods as `Class.method`.
+   - `graphify explain "<Symbol>"`: `file:line` plus 20 neighbours. That is not a full caller list.
+   - `graphify affected "<Symbol>" --depth 1`: direct dependents. Run it only if a contract may change.
+   - `graphify query "<names>" --depth 1`: only when you do not know the names.
 
-- **Locate through the graph first**, run from this folder:
-  - `graphify explain "<Symbol>"`: file:line plus up to 20 neighbours; not a full caller list;
-  - `graphify affected "<Symbol>" --depth 1`: direct dependents;
-  - `graphify path "<A>" "<B>"`;
-  - `graphify query "<identifiers>" --depth 1` for discovery.
+   Put likely follow-ups into the same call:
+   - `gm.py nodes <word>` if you are unsure of a name;
+   - `grep -rn "<Name>"` for a public symbol, an Activity, Fragment, ViewModel or Service, or anything referenced from XML or DI. The graph shows these with few or no callers.
+   - a grep of the test folders for the class, since same-package tests have no graph edge.
 
-  Use names as written in code; for a method, qualify it as `Class.method`. On no match, run `gm.py nodes <word>`; after two misses, grep. When unsure whether the graph covers some files, check with `gm.py covers <file>...` (0 nodes: grep them) rather than assuming. Whenever you grep instead of using the graph, say why in one line (`Lookup: grep, because ...`). If the session note lists changed files, run `gm.py update` once before the first lookup. Call the graphify CLI directly; the graphify skill is only for semantic doc builds.
-- **Read only what the task needs**, with offset/limit: the whole function or class you will change, each call site you will update, any callee whose behaviour you rely on, and the area's tests. The graph cannot see config and resources (XML layouts, manifests, strings, navigation), build scripts, SQL, string-keyed lookups or DI/reflection wiring, so grep those when the task touches them. Kotlin/Java tests in the same package show no edge; look in `src/test/` and similar folders.
-- **Before the first edit, write one or two lines**: `Context: have ... Reading ... because ... Skipping ...`. Before reporting, check that each Reading item was read.
-  - The graph alone answers where-is and what-calls-what.
-  - Read real code before editing it, when behaviour matters, when an edge is INFERRED or AMBIGUOUS, or when the file changed since the build.
-  - Before trusting "no callers", grep the name. Always do this for Activities, Services, ViewModels, DI-provided and XML-referenced classes.
-  - When you change a contract, run `affected --depth 1` and update every direct dependent. Also grep:
-    - implementations (`: InterfaceName`);
-    - XML, manifest and DI references;
-    - both `R.id.x` and `binding.x` forms.
-  - Add or update a test when the area has tests.
-- **After editing**, run the narrowest build or test covering the change and its dependents, and fix your failures; name anything that could not run. Then run `gm.py update` (the Stop hook also refreshes the graph later).
-- **Keep `.claude/graph-memory.md` current:**
-  - finished feature: a Log line, plus refresh Now;
-  - a decision or rule: add it;
-  - stopping mid-task: `/graph-memory save`.
+   The graph does not see literals and string keys, config and build scripts, resources (XML, manifest, strings, navigation), SQL, DI or reflection. Grep those when the task touches them. Whenever you grep instead of using the graph, say why in one line.
 
-  No secrets.
+2. **Before the first edit**, write `Context: have ... Reading ... because ... Skipping ...`. Then read exactly that, with all ranges in one message (parallel Reads, or one `sed -n` call):
+   - the whole function or class you will change, to its end. Never edit a region you have only partly read. Read a whole file only if it is under about 80 lines or you are rewriting it.
+   - every direct dependent you will update;
+   - callees whose behaviour you rely on;
+   - the tests for the area;
+   - the notes' Rules, if the session note cut them and the task touches them.
+
+   Treat `INFERRED` and `AMBIGUOUS` edges as unconfirmed. If your reads reveal more dependencies, check them in one more batch.
+
+3. **Edit.** A contract change means a signature or parameter (even one with a default), a return value, errors, side effects, a data shape, a rename or delete, an interface, abstract, enum or sealed member, or an XML or DI entry. When you make one:
+   - update or clear every direct dependent;
+   - grep implementers (`: Name`) and `when` sites;
+   - for a rename or delete, grep the whole repo, and for views grep both `R.id.x` and `binding.x`.
+
+   Add or update a test where the area has tests.
+
+4. **Verify** in one call: the narrowest compile and test commands that cover the change and its dependents, other modules included. The session note's Overview names the commands. A slow build is no reason to skip. Fix your own failures, report unrelated ones as possibly pre-existing, and name what could not run.
+
+5. **Report** briefly: what changed, how it was verified, and what was not. Before that, check that every "Reading" item was read and every dependent updated or cleared.
+   - Do not refresh the graph: the Stop hook does it after every reply, including before later tasks.
+   - The exception is deleted or moved code: run `gm.py update` once at the end, and if it says graphify kept the old graph, run it again with `--force`.
+   - Edit the notes only when the user made a decision or stated a rule, or work is left unfinished.
+
+If two lookups miss, or a test failure cannot be placed, see `~/.claude/skills/graph-memory/references/lookup.md`. When unsure whether to read something, ask: "If this is wrong, will I write incorrect code?" If yes, read it.

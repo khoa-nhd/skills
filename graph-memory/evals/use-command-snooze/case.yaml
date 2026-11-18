@@ -4,7 +4,7 @@ expected_outcome: |
   The agent follows the use procedure. It locates code with graphify before reading source, writes a
   one-line context check (have / reading / skipping) before its first edit, then adds a `snooze`
   subcommand to remindly/cli.py that loads the store, finds the reminder by id, calls models.snooze()
-  with the given minutes and saves. It runs the tests (python -m pytest) after editing, refreshes the
-  graph, and reports what changed and what was verified. It does not read notify.py or scheduler.py.
+  with the given minutes and saves. It runs the tests (python -m pytest) after editing, leaves the graph
+  refresh to the Stop hook, and reports what changed and what was verified. It does not read notify.py or scheduler.py.
 context:
   scaffold_script: place-files.sh
