@@ -35,7 +35,7 @@ Write in terse English, which costs fewer tokens than Vietnamese with diacritics
 3. Edit the file in place:
    - replace Now;
    - add to Decisions and Rules, merging duplicates and dropping items that are no longer true;
-   - add one Log line for today and drop Log lines beyond the last 10.
+   - add one Log line for today, unless today's work is already logged (for example by a `use` task), and drop Log lines beyond the last 10.
 4. Keep the file under about 80 lines. If it is over, shorten the Log, merge Rules, and remove detail that no new chat needs.
 5. If code changed this session and the graph was not refreshed, run `gm.py update`.
 6. Tell the user in one or two lines what changed in the notes.

@@ -4,7 +4,7 @@
 
 Goal: once init is done, any new chat in this folder starts with the graph and the notes, and follows the lookup rules with no manual steps.
 
-1. Run `python ~/.claude/skills/graph-memory/scripts/gm.py init` from the folder the user wants to set up, normally the current one. In one call it:
+1. Run `python $HOME/.claude/skills/graph-memory/scripts/gm.py init` from the folder the user wants to set up, normally the current one. In one call it:
    - checks that the graphify CLI is installed;
    - builds the graph with `graphify update .` if there is none, or refreshes it (parser pass, no tokens);
    - installs graphify's git hooks in a git repo, so the graph rebuilds in the background after commit, checkout, merge and rebase;
@@ -23,14 +23,22 @@ Goal: once init is done, any new chat in this folder starts with the graph and t
 
 4. Fill the Overview section of the notes, but only if it is still empty. Keep it to about 5 lines: what the project is, the stack, the entry points, and how to run and test it. Take facts from cheap sources only:
    - the first screen of the README;
-   - the package manifest (package.json scripts, pyproject.toml, Cargo.toml, Makefile targets);
+   - the build manifest: package.json scripts, pyproject.toml, Cargo.toml, go.mod, Makefile targets; for Gradle, the `include(...)` modules in settings.gradle(.kts) and the plugins in each module's build.gradle(.kts) (application or library, Compose, Hilt, KSP/kapt);
    - the Summary and God Nodes parts of `graphify-out/GRAPH_REPORT.md`.
 
    Do not explore the codebase for this. It is a seed that later saves refine.
 
 5. Init prints the doc count. If the folder is documentation-heavy, mention that `/graph-memory update --docs` would add semantic doc extraction at a token cost. Do not run it unasked.
 
-6. Report back in a few lines: the graph size, what was written where, and that new chats in this folder pick it up automatically. If init says `graphify-out/` is not git-ignored, mention it and let the user decide.
+6. Make sure the Overview names a compile command and a unit-test command, plus lint and device tests if the project has them. For Gradle, for example, `./gradlew :app:compileDebugKotlin` and `./gradlew :app:testDebugUnitTest`. `/graph-memory use` relies on them to verify changes.
+
+7. Report back in a few lines:
+   - the graph size;
+   - what was written where;
+   - that new chats in this folder pick it up automatically;
+   - that the global Stop hook keeps the graph fresh after each reply, even in a folder that is not a git repo.
+
+   If init says `graphify-out/` is not git-ignored, or that global hooks are missing, mention it and let the user decide.
 
 ## Remove
 

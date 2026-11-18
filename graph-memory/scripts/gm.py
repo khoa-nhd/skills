@@ -14,6 +14,8 @@ CLAUDE.md. `init` always works on the current folder.
   nodes WORD [WORD ...]     node labels that match the words: a cheap vocabulary lookup
   remove [--dry-run] [--git-hooks] [--guard] [--purge --yes]
                             undo init (keeps the graph and the notes unless --purge)
+  stop-hook                 Stop hook: when code changed, refresh the graph in the background
+  bg-update ROOT            (internal) the detached refresh that stop-hook starts
 
 Standard library only, so it starts fast and needs nothing installed.
 """
@@ -48,6 +50,14 @@ HOT_SECTION_MAX = 10
 HOT_TOTAL_MAX = 30
 NOTES_SOFT_CAP = 80
 DOCS_HEAVY = 15
+STATE_NAME = ".graph-memory-state.json"
+LOCK_NAME = ".graph-memory-update.lock"
+LOG_NAME = ".graph-memory-update.log"
+GRAPHIFY_TIMEOUT = 1800  # seconds a single `graphify update` may take
+LOCK_MAX_AGE = GRAPHIFY_TIMEOUT + 600  # an older lock is left over from a refresh that crashed
+RETRY_AFTER = 1800  # after a failed refresh, retry the same changes only after this long
+# git and graphify are console programs: keep them from flashing a window when a hook runs them on Windows.
+NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 TEMPLATE = SKILL_DIR / "assets" / "notes-template.md"
@@ -86,17 +96,54 @@ def load_json(path: Path):
         return None
 
 
-def write_keeping_newlines(path: Path, text: str) -> None:
-    """Write text, keeping CRLF line endings if the existing file used them."""
-    newline = "\n"
+def read_text_strict(path: Path) -> str | None:
+    """Text of a file we are about to rewrite: "" if missing, None if it is not UTF-8.
+
+    Rewriting a file decoded with errors="replace" would destroy every non-UTF-8
+    character in it, so such files are left alone.
+    """
     try:
-        if b"\r\n" in path.read_bytes():
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return None
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return None  # UTF-16
+    try:
+        return raw.decode("utf-8-sig").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return None
+
+
+def write_keeping_newlines(path: Path, text: str) -> None:
+    """Write text atomically, keeping the file's CRLF line endings and UTF-8 BOM if it had them."""
+    newline, bom = "\n", b""
+    try:
+        raw = path.read_bytes()
+        if b"\r\n" in raw:
             newline = "\r\n"
+        if raw.startswith(b"\xef\xbb\xbf"):
+            bom = b"\xef\xbb\xbf"
     except OSError:
         pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline=newline) as handle:
-        handle.write(text)
+    data = bom + text.replace("\n", newline).encode("utf-8")
+    # Write through a symlink (CLAUDE.md -> AGENTS.md stays a link) and keep the file's mode.
+    target = path.resolve() if path.is_symlink() else path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_bytes(data)
+        if target.exists():
+            shutil.copymode(target, temp)
+        os.replace(temp, target)  # a reader never sees a half-written file
+    except OSError:
+        target.write_bytes(data)  # e.g. Windows refuses the replace while another program holds the file
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
 
 
 def human_age(seconds: float) -> str:
@@ -123,15 +170,22 @@ def read_stdin(timeout: float = 2.0) -> str:
     chunks: list[bytes] = []
 
     def reader() -> None:
+        # os.read, not sys.stdin.buffer: a daemon thread still inside the buffered
+        # reader at exit can abort the interpreter during shutdown.
         try:
-            chunks.append(sys.stdin.buffer.read())
+            descriptor = sys.stdin.fileno()
+            while True:
+                block = os.read(descriptor, 65536)
+                if not block:
+                    break
+                chunks.append(block)
         except (OSError, ValueError, AttributeError):
             pass
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
     thread.join(timeout)
-    return chunks[0].decode("utf-8-sig", "replace") if chunks else ""  # -sig: drop a BOM
+    return b"".join(chunks).decode("utf-8-sig", "replace")  # -sig: drop a BOM (PowerShell adds one)
 
 
 # ---------------------------------------------------------------- project facts
@@ -181,7 +235,7 @@ def git(root: Path, *args: str, timeout: float = 5) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(root), *args], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            encoding="utf-8", errors="replace", timeout=timeout, **NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -207,10 +261,13 @@ def guard_installed(root: Path) -> bool:
                for name in ("settings.json", "settings.local.json"))
 
 
-def global_hook_installed() -> bool:
+def global_hooks() -> set[str]:
+    """The graph-memory hooks registered in the user's Claude Code settings."""
     config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
     text = read_text(config / "settings.json")
-    return "gm.py" in text and "session-start" in text
+    if "gm.py" not in text:
+        return set()
+    return {name for name in ("session-start", "stop-hook") if name in text}
 
 
 def stale_files(root: Path) -> list[str]:
@@ -222,32 +279,155 @@ def stale_files(root: Path) -> list[str]:
     manifest = load_json(root / OUT / "manifest.json")
     if not isinstance(manifest, dict):
         return []
+    # Files already hashed and found unchanged, keyed by (mtime, size) and the build's hash,
+    # so a checkout that only moved timestamps is not re-hashed on every hook call.
+    verified = load_state(root).get("verified")
+    verified = verified if isinstance(verified, dict) else {}
+    still_verified: dict = {}
     changed: list[str] = []
     for rel, meta in manifest.items():
         if not isinstance(meta, dict):
             continue
         path = root / rel
         try:
-            mtime = path.stat().st_mtime
+            stat = path.stat()
         except FileNotFoundError:
             changed.append(f"{rel} (deleted)")
             continue
         except OSError:
             continue
         recorded = meta.get("mtime")
-        if isinstance(recorded, (int, float)) and abs(mtime - recorded) < 0.01:
+        if isinstance(recorded, (int, float)) and abs(stat.st_mtime - recorded) < 0.01:
             continue
         digest = meta.get("ast_hash")
-        if digest and md5_of(path) == digest:
+        key = [[round(stat.st_mtime, 3), stat.st_size], digest]
+        if digest and (verified.get(rel) == key or md5_of(path) == digest):
+            still_verified[rel] = key
             continue
         changed.append(rel)
-    untracked = git(root, "ls-files", "--others", "--exclude-standard")
-    for rel in (untracked or "").splitlines():
+    if still_verified != verified:
+        save_state(root, verified=still_verified)
+    # -z and quotepath=off: names with non-ASCII characters come back unquoted.
+    untracked = git(root, "-c", "core.quotepath=off", "ls-files", "-z", "--others", "--exclude-standard")
+    for rel in (untracked or "").split("\0"):
         rel = rel.strip()
         if rel and rel not in manifest and not rel.startswith(OUT + "/") \
                 and Path(rel).suffix.lower() in CODE_EXTS:
             changed.append(f"{rel} (new)")
     return changed
+
+
+def load_state(root: Path) -> dict:
+    state = load_json(root / OUT / STATE_NAME)
+    return state if isinstance(state, dict) else {}
+
+
+def save_state(root: Path, **fields) -> None:
+    path = root / OUT / STATE_NAME
+    if not path.parent.is_dir():
+        return
+    if path.exists() and not isinstance(load_json(path), dict):
+        return  # unreadable right now (another writer?): skipping beats wiping the other fields
+    state = load_state(root)
+    state.update(fields)
+    temp = path.with_name(f"{STATE_NAME}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(state, indent=1), encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def entry_fingerprint(root: Path, entry: str):
+    """(mtime, size) of the file a stale_files() entry names, or "missing"."""
+    rel = re.sub(r" \((new|deleted)\)$", "", entry)
+    try:
+        stat = (root / rel).stat()
+    except OSError:
+        return "missing"
+    return [round(stat.st_mtime, 3), stat.st_size]
+
+
+def pending_changes(root: Path) -> list[str]:
+    """Changes the graph has not absorbed yet.
+
+    A file that still differs right after a successful refresh is one graphify
+    does not index (an unsupported language, an ignored folder), so it is skipped,
+    but only while it stays exactly as it was then: any later edit to it counts again.
+    """
+    unindexed = load_state(root).get("unindexed")
+    unindexed = unindexed if isinstance(unindexed, dict) else {}
+    return [entry for entry in stale_files(root) if unindexed.get(entry) != entry_fingerprint(root, entry)]
+
+
+def graphify_refused(log: str) -> bool:
+    """graphify keeps the old graph (and exits 1) when the new one would have fewer nodes."""
+    return "Pass --force" in log or "Refusing to overwrite" in log
+
+
+def fingerprints(root: Path, entries: list[str]) -> dict:
+    return {entry: entry_fingerprint(root, entry) for entry in entries}
+
+
+def record_update(root: Path, code: int, log: str, forced: bool = False, before: dict | None = None) -> None:
+    """Remember how the last refresh went, for the notes, status and the Stop hook.
+
+    `before` holds the pending entries and their fingerprints taken just before
+    graphify ran. Only an entry that was pending then and has not changed since is
+    "unindexed": a file edited while graphify was running stays pending.
+    """
+    refused = not forced and graphify_refused(log)
+    remaining = fingerprints(root, stale_files(root))
+    fields: dict = {"last_update": time.time(), "last_update_ok": code == 0 and not refused}
+    if code == 0 and not refused:
+        unindexed = {entry: print_ for entry, print_ in remaining.items()
+                     if before is not None and before.get(entry) == print_}
+        fields.update(unindexed=unindexed, needs_force=False, refused_pending={}, failed_pending={})
+    elif refused:
+        fields.update(needs_force=True, refused_pending=remaining)
+    else:
+        fields.update(failed_pending=remaining)
+    save_state(root, **fields)
+
+
+def update_running(root: Path) -> bool:
+    try:
+        return time.time() - (root / OUT / LOCK_NAME).stat().st_mtime < LOCK_MAX_AGE
+    except OSError:
+        return False
+
+
+def launch_background_update(root: Path) -> None:
+    """Start `gm.py bg-update` detached, so the hook itself returns at once."""
+    command = [sys.executable, str(Path(__file__).resolve()), "bg-update", str(root)]
+    options: dict = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                     "stderr": subprocess.DEVNULL, "cwd": str(root), "close_fds": True}
+    if os.name != "nt":
+        subprocess.Popen(command, start_new_session=True, **options)
+        return
+    detached = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        # Also leave the hook runner's job object, if any, so closing it does not kill the refresh.
+        subprocess.Popen(command, creationflags=detached | 0x01000000, **options)
+    except OSError:
+        subprocess.Popen(command, creationflags=detached, **options)
+
+
+def refresh_section(root: Path) -> bool:
+    """Bring an existing graph-memory block in CLAUDE.md up to the installed skill's text."""
+    path = root / "CLAUDE.md"
+    text = read_text_strict(path)
+    body = read_text(SECTION_TEXT).strip()
+    if not body or not text or not SECTION_RE.search(text):
+        return False
+    new = SECTION_RE.sub(lambda _match: f"{MARK_START}\n{body}\n{MARK_END}\n", text, count=1)
+    if new == text:
+        return False
+    write_keeping_newlines(path, new)
+    return True
 
 
 def corpus_counts(root: Path) -> tuple[int, int]:
@@ -310,11 +490,14 @@ def session_note(root: Path, cwd: Path) -> str:
             in_root = True
         if not in_root:
             lines.append(f"Run graphify commands from {where}.")
-        stale = stale_files(root)
+        stale = pending_changes(root)
         if stale:
             shown = ", ".join(stale[:6]) + (f" and {len(stale) - 6} more" if len(stale) > 6 else "")
             lines.append(f"Changed since that build: {shown}. "
-                         "Run `graphify update .` before trusting the graph for them.")
+                         "Run `gm.py update` once before the first lookup.")
+        if load_state(root).get("needs_force"):
+            lines.append("The last graph refresh kept the old graph because the new one would be smaller "
+                         "(code deleted or moved?). If that was intended, run `gm.py update --force`.")
         if (root / OUT / "needs_update").exists():
             lines.append("Docs changed since the last semantic build; "
                          "`/graph-memory update --docs` refreshes them (costs tokens).")
@@ -327,6 +510,10 @@ def session_note(root: Path, cwd: Path) -> str:
     else:
         lines.append(f"graph-memory is set up for {where} but {OUT}/graph.json is missing; "
                      "run `/graph-memory update` to rebuild it.")
+    if refresh_section(root):
+        lines.append("The graph-memory section of CLAUDE.md was just updated to the installed skill's version. "
+                     "This chat loaded the old text, so read that section (between the graph-memory markers) "
+                     "before coding.")
     notes = root / NOTES_REL
     if notes.is_file():
         hot = hot_lines(notes)
@@ -351,12 +538,12 @@ def graphify_exe() -> str | None:
     return None
 
 
-def run_graphify(exe: str, args: list[str], root: Path, timeout: int = 1800) -> tuple[int, str]:
+def run_graphify(exe: str, args: list[str], root: Path, timeout: int = GRAPHIFY_TIMEOUT) -> tuple[int, str]:
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     try:
         result = subprocess.run(
             [exe, *args], cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout, env=env,
+            encoding="utf-8", errors="replace", timeout=timeout, env=env, **NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
         return 124, f"graphify {' '.join(args)} timed out after {timeout}s"
@@ -378,7 +565,9 @@ def write_section(root: Path) -> str:
         return f"! CLAUDE.md section text missing at {posix(SECTION_TEXT)}"
     path = root / "CLAUDE.md"
     block = f"{MARK_START}\n{body}\n{MARK_END}\n"
-    text = read_text(path)
+    text = read_text_strict(path)
+    if text is None:
+        return "! CLAUDE.md is not UTF-8 text; left it unchanged. Save it as UTF-8 and run init again."
     if SECTION_RE.search(text):
         new = SECTION_RE.sub(lambda _match: block, text, count=1)
         if new == text:
@@ -391,7 +580,9 @@ def write_section(root: Path) -> str:
 
 def remove_section(root: Path, dry: bool) -> str | None:
     path = root / "CLAUDE.md"
-    text = read_text(path)
+    text = read_text_strict(path)
+    if text is None:
+        return "! CLAUDE.md is not UTF-8 text; left it unchanged (remove the graph-memory block by hand)"
     match = SECTION_RE.search(text)
     if not match:
         return None
@@ -421,7 +612,9 @@ def ensure_notes(root: Path) -> str:
 
 def ensure_rc(root: Path) -> str:
     path = root / RC_NAME
-    text = read_text(path)
+    text = read_text_strict(path)
+    if text is None:
+        return f"! {RC_NAME} is not UTF-8 text; left it unchanged"
     if re.search(r"^\s*query_budget\s*=", text, re.M):
         return "= .graphifyrc already sets query_budget"
     write_keeping_newlines(path, (text.rstrip("\n") + "\n" if text.strip() else "") + RC_BLOCK)
@@ -431,7 +624,9 @@ def ensure_rc(root: Path) -> str:
 def ensure_ignore(root: Path) -> tuple[bool, str]:
     """Keep the notes and CLAUDE.md out of the graph: they reach Claude directly."""
     path = root / IGNORE_NAME
-    text = read_text(path)
+    text = read_text_strict(path)
+    if text is None:
+        return False, f"! {IGNORE_NAME} is not UTF-8 text; left it unchanged"
     if IGNORE_BLOCK in text:
         return False, "= .graphifyignore already excludes .claude/ and CLAUDE.md"
     write_keeping_newlines(path, (text.rstrip("\n") + "\n" if text.strip() else "") + IGNORE_BLOCK)
@@ -440,7 +635,9 @@ def ensure_ignore(root: Path) -> tuple[bool, str]:
 
 def remove_block(root: Path, name: str, block: str, what: str, dry: bool) -> str | None:
     path = root / name
-    text = read_text(path)
+    text = read_text_strict(path)
+    if text is None:
+        return f"! {name} is not UTF-8 text; left it unchanged"
     if block not in text:
         return None
     if dry:
@@ -455,18 +652,21 @@ def remove_block(root: Path, name: str, block: str, what: str, dry: bool) -> str
 
 # ---------------------------------------------------------------- commands
 
+def hook_input() -> tuple[dict, Path]:
+    """A hook's stdin JSON, and the session folder it names (falling back to the env or cwd)."""
+    raw = read_stdin()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    folder = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    return data, Path(folder)
+
+
 def cmd_session_start(args) -> int:
-    if args.plain:
-        cwd = Path.cwd()
-    else:
-        cwd = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-        raw = read_stdin()
-        try:
-            data = json.loads(raw) if raw.strip() else {}
-        except ValueError:
-            data = {}
-        if isinstance(data, dict) and data.get("cwd"):
-            cwd = Path(data["cwd"])
+    cwd = Path.cwd() if args.plain else hook_input()[1]
     root = find_root(cwd)
     if args.plain:
         say(session_note(root, cwd) if root else
@@ -482,10 +682,12 @@ def cmd_session_start(args) -> int:
 def cmd_status(args) -> int:
     cwd = Path.cwd()
     root = find_root(cwd)
-    hook_state = "installed" if global_hook_installed() else "not installed"
+    hooks = global_hooks()
+    hook_state = ("SessionStart hook " + ("on" if "session-start" in hooks else "off")
+                  + ", Stop hook (auto-refresh) " + ("on" if "stop-hook" in hooks else "off"))
     if not root:
         say(f"No graph memory in {posix(cwd.resolve())} or its parents. `/graph-memory init` sets it up.")
-        say(f"global SessionStart hook: {hook_state}")
+        say(f"global: {hook_state}")
         return 0
     say(f"graph-memory status: {posix(root)}")
     graph = root / OUT / "graph.json"
@@ -493,12 +695,23 @@ def cmd_status(args) -> int:
         info = report_info(root)
         age = human_age(time.time() - graph.stat().st_mtime)
         say(f"  graph:     built {age} ago, {info.get('nodes', '?')} nodes, {info.get('edges', '?')} edges")
-        stale = stale_files(root)
+        stale = pending_changes(root)
         if stale:
             more = " ..." if len(stale) > 10 else ""
             say(f"  changed:   {len(stale)} since build: " + ", ".join(stale[:10]) + more)
         else:
             say("  changed:   nothing since build")
+        state = load_state(root)
+        if state.get("last_update"):
+            result = "ok" if state.get("last_update_ok") else f"failed (see {OUT}/{LOG_NAME})"
+            say(f"  refreshed: {human_age(time.time() - state['last_update'])} ago, {result}"
+                + (", one running now" if update_running(root) else ""))
+        unindexed = list(state.get("unindexed") or {})
+        if unindexed:
+            say(f"  unindexed: {len(unindexed)} file(s) graphify does not index, e.g. {unindexed[0]}")
+        if state.get("needs_force"):
+            say("  shrink:    the last refresh kept the old graph; run `gm.py update --force` "
+                "if code was deleted or moved on purpose")
         if (root / OUT / "needs_update").exists():
             say("  docs:      semantic re-extraction pending (`/graph-memory update --docs`, costs tokens)")
     else:
@@ -518,7 +731,7 @@ def cmd_status(args) -> int:
         say("  git hooks: n/a (not a git repo)")
     budget = re.search(r"^\s*query_budget\s*=\s*(\d+)", read_text(root / RC_NAME), re.M)
     say("  query cap: " + (f"{budget.group(1)} tokens (.graphifyrc)" if budget else "graphify default (2000 tokens)"))
-    say(f"  global:    SessionStart hook {hook_state}")
+    say(f"  global:    {hook_state}")
     if args.benchmark and graph.is_file():
         exe = graphify_exe()
         if exe:
@@ -548,11 +761,13 @@ def cmd_init(args) -> int:
     # Newly ignored files make the graph smaller on purpose; graphify refuses that without --force.
     build = ["update", "."] + (["--force"] if had_graph and ignore_added else [])
     started = time.time()
+    before = fingerprints(root, stale_files(root))
     code, log = run_graphify(exe, build, root)
     if code != 0:
         say(f"x `graphify update .` failed (exit {code}):")
         say(tail(log, 15))
         return code
+    record_update(root, code, log, forced="--force" in build, before=before)
     info = report_info(root)
     say(f"+ graph {'refreshed' if had_graph else 'built'} in {time.time() - started:.0f}s: "
         f"{info.get('nodes', '?')} nodes, {info.get('edges', '?')} edges (parser only, no tokens)")
@@ -568,7 +783,7 @@ def cmd_init(args) -> int:
         if git(root, "check-ignore", "-q", OUT) is None:
             say(f"i {OUT}/ is not git-ignored; add it to .gitignore unless you want the graph committed")
     else:
-        say("- not a git repo: no auto-rebuild hooks; run /graph-memory update after code changes")
+        say("- not a git repo: no git hooks; the global Stop hook still refreshes the graph after each reply")
     if args.guard:
         code, log = run_graphify(exe, ["claude", "install"], root, timeout=120)
         say("+ graphify guard installed (PreToolUse hooks in .claude/settings.json and graphify's "
@@ -579,8 +794,9 @@ def cmd_init(args) -> int:
     say(f"i indexed: {code_files} code files, {doc_files} doc files")
     if doc_files >= DOCS_HEAVY:
         say("i docs-heavy folder: `/graph-memory update --docs` adds semantic doc extraction (costs tokens)")
-    if not global_hook_installed():
-        say("! the global SessionStart hook is not installed; run `python "
+    missing = {"session-start", "stop-hook"} - global_hooks()
+    if missing:
+        say("! global hooks missing (" + ", ".join(sorted(missing)) + "); run `python "
             + posix(SKILL_DIR / "scripts" / "install.py") + "`")
     if not note_sections(root / NOTES_REL).get("overview"):
         say(f"next: fill the Overview section of {NOTES_REL} (about 5 lines, from the README, "
@@ -596,22 +812,21 @@ def cmd_update(args) -> int:
         return 2
     before = report_info(root).get("nodes", "0")
     started = time.time()
+    before = fingerprints(root, stale_files(root))
     code, log = run_graphify(exe, ["update", "."] + (["--force"] if args.force else []), root)
+    record_update(root, code, log, forced=args.force, before=before)
     if code != 0:
         say(f"x `graphify update .` failed (exit {code}):")
         say(tail(log, 12))
-        if "--force" in log and not args.force:
-            say("i if code was deleted or moved on purpose, run `gm.py update --force`")
+        if graphify_refused(log) and not args.force:
+            say("i graphify kept the old graph because the new one is smaller. If code was deleted or "
+                "moved on purpose, run `gm.py update --force`")
         return code
     after = report_info(root).get("nodes", "?")
     say(f"+ graph updated in {time.time() - started:.0f}s for {posix(root)}: {before} -> {after} nodes")
-    if "--force" in log and not args.force:
-        say(tail(log, 4))
-        say("i graphify may have kept the old graph; if code was deleted or moved on purpose, "
-            "run `gm.py update --force`")
-    stale = stale_files(root)
-    if stale:
-        say("! still differs from the graph: " + ", ".join(stale[:8]))
+    unindexed = list(load_state(root).get("unindexed") or {})
+    if unindexed:
+        say(f"i {len(unindexed)} changed file(s) graphify does not index: " + ", ".join(unindexed[:8]))
     if (root / OUT / "needs_update").exists():
         say("i docs changed since the last semantic build: `/graph-memory update --docs` refreshes them "
             "(costs tokens)")
@@ -720,6 +935,77 @@ def cmd_remove(args) -> int:
     return 0
 
 
+def cmd_stop_hook(_args) -> int:
+    """After each reply: if code changed since the last build, refresh the graph in the background."""
+    _data, cwd = hook_input()
+    root = find_root(cwd)
+    if not root or not has_section(root) or not (root / OUT / "graph.json").is_file():
+        return 0  # only folders set up with init
+    if update_running(root) or not graphify_exe():
+        return 0
+    pending = pending_changes(root)
+    if not pending:
+        return 0
+    state = load_state(root)
+    current = fingerprints(root, pending)
+    if state.get("needs_force") and current == state.get("refused_pending"):
+        return 0  # graphify already declined exactly these changes; retrying every reply changes nothing
+    if state.get("last_update_ok") is False and current == state.get("failed_pending") \
+            and time.time() - float(state.get("last_update") or 0) < RETRY_AFTER:
+        return 0  # the last refresh failed on these same changes; back off instead of retrying each reply
+    launch_background_update(root)
+    return 0
+
+
+def cmd_bg_update(args) -> int:
+    """The detached refresh: one at a time per project, outcome kept for status and the notes."""
+    root = Path(args.root).resolve()
+    lock = root / OUT / LOCK_NAME
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    token = f"{os.getpid()}-{time.time()}"
+    try:
+        handle = os.open(lock, flags)
+    except FileExistsError:
+        if update_running(root):
+            return 0
+        # Left over from a refresh that crashed. Rename before removing, so two
+        # refreshes that both found it stale cannot both take it over.
+        claimed = lock.with_name(f"{LOCK_NAME}.{os.getpid()}.stale")
+        try:
+            os.replace(lock, claimed)
+            if time.time() - claimed.stat().st_mtime < LOCK_MAX_AGE:
+                os.replace(claimed, lock)  # another refresh took it over first: theirs is live
+                return 0
+            claimed.unlink()
+            handle = os.open(lock, flags)
+        except OSError:
+            return 0
+    except OSError:
+        return 0
+    os.write(handle, token.encode())
+    os.close(handle)
+    try:
+        exe = graphify_exe()
+        if not exe:
+            return 2
+        started = time.strftime("%Y-%m-%d %H:%M:%S")
+        before = fingerprints(root, stale_files(root))
+        code, log = run_graphify(exe, ["update", "."], root)
+        record_update(root, code, log, before=before)
+        try:
+            (root / OUT / LOG_NAME).write_text(
+                f"{started} graphify update . -> exit {code}\n{tail(log, 30)}\n", encoding="utf-8")
+        except OSError:
+            pass
+    finally:
+        try:
+            if lock.read_text(encoding="utf-8") == token:  # never remove another refresh's lock
+                lock.unlink()
+        except OSError:
+            pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -739,6 +1025,8 @@ def main(argv: list[str] | None = None) -> int:
     remove = sub.add_parser("remove")
     for flag in ("--dry-run", "--git-hooks", "--guard", "--purge", "--yes"):
         remove.add_argument(flag, action="store_true")
+    sub.add_parser("stop-hook")
+    sub.add_parser("bg-update").add_argument("root")
     args = parser.parse_args(argv)
     if args.cmd == "session-start":
         try:
@@ -747,6 +1035,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.plain:
                 raise
             return 0  # a chat must never fail to start because of this hook
+    if args.cmd in ("stop-hook", "bg-update"):
+        try:
+            return (cmd_stop_hook if args.cmd == "stop-hook" else cmd_bg_update)(args)
+        except Exception:
+            return 0  # hooks and background work must never disturb the chat
     handlers = {"status": cmd_status, "init": cmd_init, "update": cmd_update,
                 "nodes": cmd_nodes, "remove": cmd_remove}
     return handlers[args.cmd](args)
