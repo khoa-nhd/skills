@@ -7,6 +7,7 @@ My personal collection of skills for [Claude Code](https://claude.com/claude-cod
 | Skill | What it does |
 |---|---|
 | [graph-memory](graph-memory/) | Per-folder project memory built on graphify: a code knowledge graph plus a short notes file. `/graph-memory use <task>` codes graph-first: it checks the context is complete before editing and verifies with a build or tests. Saves tokens without hurting code quality, and new chats continue the work without re-reading the codebase. Other commands: `init`, `update`, `status`, `ask`, `impact`, `save`, `resume`, `remove`. |
+| [codemode](codemode/) | Batches predictable multi-file work into one JavaScript script with undo, permission-aware guardrails, and a compact report. Works anywhere Claude Code has Bash, including the Desktop app. |
 
 ## Using a skill
 

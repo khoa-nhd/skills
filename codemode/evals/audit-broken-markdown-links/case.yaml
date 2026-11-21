@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: audit-broken-markdown-links
+expected_outcome: |
+  broken-links.md lists exactly the five broken local targets and no false positives, and no existing doc is changed.
+context:
+  scaffold_script: place-files.sh

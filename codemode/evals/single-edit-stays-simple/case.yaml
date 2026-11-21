@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: single-edit-stays-simple
+expected_outcome: |
+  Only DEFAULT_PORT changes to 8080, with direct editing rather than a Code Mode script.
+context:
+  scaffold_script: place-files.sh

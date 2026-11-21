@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: rename-option-across-files
+expected_outcome: |
+  Every maxRetries option becomes retryLimit across source, tests and docs. maxRetriesPerHost and MAX_RETRIES are unchanged, and the tests pass.
+context:
+  scaffold_script: place-files.sh

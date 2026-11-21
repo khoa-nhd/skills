@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
 graph-memory-workspace/
+codemode-workspace/
 evals/results/
