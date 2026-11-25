@@ -8,6 +8,7 @@ My personal collection of skills for [Claude Code](https://claude.com/claude-cod
 |---|---|
 | [graph-memory](graph-memory/) | Per-folder project memory built on graphify: a code knowledge graph plus a short notes file. `/graph-memory use <task>` codes graph-first: it checks the context is complete before editing and verifies with a build or tests. Saves tokens without hurting code quality, and new chats continue the work without re-reading the codebase. Other commands: `init`, `update`, `status`, `ask`, `impact`, `save`, `resume`, `remove`. |
 | [codemode](codemode/) | Batches predictable multi-file work into one JavaScript script with undo, permission-aware guardrails, and a compact report. Works anywhere Claude Code has Bash, including the Desktop app. |
+| [saas-ads](saas-ads/) | Makes premium, cinematic SaaS-style promo videos (16:9 and 9:16) for any app or website in Remotion, from the product's real UI: story structure, continuous-camera transitions, polish checklist, beat-synced music and sound design, plus a component kit and scripts for capture, music analysis, scoring and review sheets. |
 
 ## Using a skill
 
