@@ -1,0 +1,34 @@
+{
+  "skills": {
+    "ui-ux-pro-max": {
+      "repo": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "path": ".claude/skills/ui-ux-pro-max",
+      "needs": ["python3"],
+      "role": "Design system: palette, type, style, landing pattern, anti-patterns, UX rules by industry and stack"
+    },
+    "hallmark": {
+      "repo": "Nutlope/hallmark",
+      "path": "skills/hallmark",
+      "needs": ["node>=18"],
+      "role": "Builds new pages from the visitor's job; sloplint; redesign keeping content and wiring"
+    },
+    "impeccable": {
+      "repo": "pbakaus/impeccable",
+      "path": ".claude/skills/impeccable",
+      "needs": [],
+      "role": "Refine and review: critique, audit, polish, harden, bolder, layout, typeset and the rest; detect"
+    },
+    "design-motion-principles": {
+      "repo": "kylezantos/design-motion-principles",
+      "path": "skills/design-motion-principles",
+      "needs": [],
+      "role": "Motion: build purposeful animation or audit existing motion"
+    }
+  },
+  "sets": {
+    "landing": ["ui-ux-pro-max", "hallmark", "impeccable", "design-motion-principles"],
+    "app": ["impeccable", "design-motion-principles", "ui-ux-pro-max"],
+    "redesign": ["hallmark", "impeccable", "design-motion-principles", "ui-ux-pro-max"],
+    "small": ["impeccable"]
+  }
+}
